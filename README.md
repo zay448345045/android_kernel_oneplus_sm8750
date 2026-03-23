@@ -1,4 +1,9 @@
-# How do I submit patches to Android Common Kernels
+版本：PLQ110_11.A.39_0390_202603061256.97.271573b3
+链接1：https://component-ota-cn.allawntech.com/downloadCheck?c=cfcd208495d565ef66e7dff9f98764da&p=a6c78fdd3756888a30ced5fe4a9a30609623a8b54b6554f185ec5bbac57c02c6b9b967d9b6786223ec6dd3282179&d=e181cd82745f88956e8098ec0182623bca30a2a51b3715b3daa301a5c5764fc3b6e3339cb92e7339ee6490&g=2790d4b7dee5fcfdd345042c55569213&id=69bd1e969e207b017bab1742&taste=1&supportDLTaste=1&mode=1&s=e507efcfd1ca0573aa6dc58c50b16387
+链接2：https://component-ota-cn.allawntech.com/downloadCheck?c=cfcd208495d565ef66e7dff9f98764da&p=a6c78fdd3756888a30ced5fe4a9a30609623a8b54b6554f185ec5bbac57c02c6b9b967d9b6786223ec6dd3282179&d=e181cd82745f88956e8098ec0182623bca30a2a51b7b03ead6e04ce9ca7400d5b4e921c5b4276d&g=2790d4b7dee5fcfdd345042c55569213&id=69bd1e969e207b017bab1742&taste=1&supportDLTaste=1&mode=1&s=c939261e60f6dea4478c21b60be94b6f
+更新日志：https://gauss-compotacostauto-cn.allawnfs.com/remove-1aa9d61a8b048e9cebd034b8c89ab608/component-ota/26/03/20/bf3772ac29b34cc09b46294764397692.html
+
+提取自OPLUS全能盒子APP：https://optool.daxiaamu.com/oplusbox/# How do I submit patches to Android Common Kernels
 
 1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
    These patches will be merged automatically in the corresponding common kernels. If the patch is already
