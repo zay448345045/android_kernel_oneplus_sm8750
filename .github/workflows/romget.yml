@@ -1,0 +1,170 @@
+name: Batch Download & Split to Release (Full Release Workflow)
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: '文件直链（多个链接用逗号隔开，支持超长字符串）'
+        required: true
+        default: 'https://github.com/mozilla/pdf.js-sample-files/raw/master/tracemonkey.pdf'
+        type: string
+      volume_size:
+        description: '分卷大小（如1900m、2g，建议1900m适配GitHub磁盘）'
+        required: false
+        default: '1900m'
+        type: string
+      compression_level:
+        description: '压缩级别（0=最快，9=最优，建议0节省时间）'
+        required: false
+        default: 0
+        type: number
+
+jobs:
+  download_split_upload_release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440  # 24小时超时
+    permissions:
+      contents: write  # Release 上传需要写权限
+
+    steps:
+      - name: 1. 检出仓库代码（解决git上下文问题）
+        uses: actions/checkout@v4  # 必须：初始化git仓库，让Release Action能识别仓库
+
+      - name: 2. 清理磁盘空间（释放最大可用空间）
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /var/cache/apt/archives /var/lib/docker
+          sudo docker system prune -a -f --volumes
+          sudo apt clean && sudo apt autoremove -y
+          echo "=== 磁盘空间清理后状态 ==="
+          df -h /
+
+      - name: 3. 流式下载+分卷+临时存储（核心逻辑）
+        id: core
+        run: |
+          set +u
+          set +e
+
+          # 初始化变量
+          WORK_DIR=$(pwd)/release_volumes
+          mkdir -p "$WORK_DIR" && cd "$WORK_DIR" || exit 1
+          FILE_URLS_STR="${{ github.event.inputs.file_url }}"
+          VOLUME_SIZE="${{ github.event.inputs.volume_size }}"
+          COMPRESS="${{ github.event.inputs.compression_level }}"
+          TOTAL_FILES=0
+          SUCCESS_FILES=0
+          FAIL_FILES=0
+          SUMMARY=""
+          VOLUMES_LIST=""  # 存储所有分卷文件路径，供后续上传
+
+          # 处理链接：移除末尾多余逗号 + 拆分数组
+          FILE_URLS_CLEAN=$(echo "$FILE_URLS_STR" | sed 's/,$//' | sed 's/, /,/g')
+          IFS=',' read -ra FILE_URLS_ARRAY <<< "$FILE_URLS_CLEAN"
+          TOTAL_COUNT=${#FILE_URLS_ARRAY[@]}
+          echo "=== 开始处理 $TOTAL_COUNT 个文件 ==="
+
+          # 循环处理每个文件（流式下载+分卷）
+          for FILE_URL in "${FILE_URLS_ARRAY[@]}"; do
+            TOTAL_FILES=$((TOTAL_FILES + 1))
+            echo -e "\n=== 处理文件 $TOTAL_FILES/$TOTAL_COUNT ==="
+            
+            # 跳过空链接
+            if [ -z "$FILE_URL" ]; then
+              echo "❌ 空链接，跳过"
+              FAIL_FILES=$((FAIL_FILES + 1))
+              SUMMARY+="- 文件 $TOTAL_FILES：空链接 | 状态：跳过\n"
+              continue
+            fi
+
+            # 处理文件名：URL解码 + 清理特殊字符
+            FILE_NAME_RAW=$(basename "$FILE_URL" | python3 -c "import urllib.parse,sys; print(urllib.parse.unquote(sys.stdin.read()))")
+            FILE_NAME_CLEAN=$(echo "$FILE_NAME_RAW" | sed -E 's/[^a-zA-Z0-9._-]/_/g;s/_+/_/g;s/^_//;s/_$//')
+            VOLUME_BASE_NAME="${FILE_NAME_CLEAN}_file${TOTAL_FILES}"
+
+            echo "📄 原始文件名：$FILE_NAME_RAW"
+            echo "🔧 清理后文件名：$VOLUME_BASE_NAME"
+            echo "🔗 下载链接：$FILE_URL"
+
+            # 核心：流式下载 → 实时压缩分卷（不保存完整原始文件）
+            echo "🚀 开始流式下载+分卷..."
+            curl -L -A "Mozilla/5.0" \
+              --retry 3 --retry-delay 5 --fail --show-error --silent \
+              "$FILE_URL" | \
+            7z a -v"$VOLUME_SIZE" -mx"$COMPRESS" -si "$VOLUME_BASE_NAME.7z"
+            
+            # 检查分卷结果（7z退出码92是正常警告）
+            SEVEN_ZIP_EXIT_CODE=$?
+            if [ "$SEVEN_ZIP_EXIT_CODE" -ne 0 ] && [ "$SEVEN_ZIP_EXIT_CODE" -ne 92 ]; then
+              echo "❌ 7z分卷失败，退出码：$SEVEN_ZIP_EXIT_CODE"
+              FAIL_FILES=$((FAIL_FILES + 1))
+              SUMMARY+="- 文件 $TOTAL_FILES：$FILE_NAME_RAW | 状态：分卷失败（退出码$SEVEN_ZIP_EXIT_CODE）\n"
+              continue
+            fi
+
+            # 统计分卷数量
+            VOLUME_COUNT=$(ls -1 "$VOLUME_BASE_NAME".7z.* 2>/dev/null | wc -l)
+            if [ "$VOLUME_COUNT" -eq 0 ]; then
+              echo "❌ 未检测到分卷文件"
+              FAIL_FILES=$((FAIL_FILES + 1))
+              SUMMARY+="- 文件 $TOTAL_FILES：$FILE_NAME_RAW | 状态：无分卷文件\n"
+              continue
+            fi
+
+            # 记录分卷文件路径（供后续上传）
+            for VOL_FILE in "$VOLUME_BASE_NAME".7z.*; do
+              VOLUMES_LIST+="$VOL_FILE "
+            done
+
+            echo "✅ 文件$TOTAL_FILES分卷完成（共$VOLUME_COUNT个分卷）"
+            SUCCESS_FILES=$((SUCCESS_FILES + 1))
+            SUMMARY+="- 文件 $TOTAL_FILES：$FILE_NAME_RAW | 分卷数：$VOLUME_COUNT | 状态：分卷成功\n"
+          done
+
+          # 输出关键结果
+          echo "total_files=$TOTAL_COUNT" >> "$GITHUB_OUTPUT"
+          echo "success_files=$SUCCESS_FILES" >> "$GITHUB_OUTPUT"
+          echo "fail_files=$FAIL_FILES" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+          echo "volumes_list=$VOLUMES_LIST" >> "$GITHUB_OUTPUT"
+          echo "work_dir=$WORK_DIR" >> "$GITHUB_OUTPUT"
+
+          echo -e "\n=== 分卷完成，待上传的分卷文件列表 ==="
+          echo "$VOLUMES_LIST"
+          exit 0
+
+      - name: 4. 上传分卷文件到 GitHub Release（使用v2版Action）
+        uses: softprops/action-gh-release@v2  # 业界主流的Release上传Action（v2）
+        with:
+          tag_name: "batch_volumes_${{ github.run_id }}_${{ github.run_number }}"
+          name: "批量分卷文件_${{ github.run_id }}"
+          body: |
+            ### 批量分卷上传完成
+            - 执行时间：${{ github.run_at }}
+            - 总文件数：${{ steps.core.outputs.total_files }}
+            - 成功分卷：${{ steps.core.outputs.success_files }}
+            - 失败/跳过：${{ steps.core.outputs.fail_files }}
+
+            ### 详细处理日志
+            ${{ steps.core.outputs.summary }}
+          files: ${{ steps.core.outputs.volumes_list }}
+          draft: false  # 直接发布正式版（如需草稿可设为true）
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 5. 强制删除本地分卷文件（核心：清理磁盘）
+        if: always()  # 无论上传成功/失败，都清理本地文件
+        run: |
+          echo "🗑️ 开始删除所有本地分卷文件..."
+          rm -rf ${{ steps.core.outputs.work_dir }}/*
+          echo "✅ 本地分卷文件已全部删除"
+          echo "=== 最终磁盘使用状态 ==="
+          df -h /
+
+      - name: 6. 输出最终结果
+        run: |
+          echo -e "\n========================================"
+          echo "✅ 任务执行完成！"
+          echo "📊 统计结果：总文件${{ steps.core.outputs.total_files }} | 成功${{ steps.core.outputs.success_files }} | 失败${{ steps.core.outputs.fail_files }}"
+          echo "📦 Release地址：https://github.com/${{ github.repository }}/releases/tag/batch_volumes_${{ github.run_id }}_${{ github.run_number }}"
+          echo "💡 所有分卷文件已上传，本地文件已删除（无磁盘残留）"
+          echo "========================================"
